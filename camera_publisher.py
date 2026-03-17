@@ -38,15 +38,16 @@ class RTSPCameraPublisher(Node):
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer for low latency
         
         # Wait for first frame to ensure connection
+        # Give up to 30s (30 attempts x 1s) for the GStreamer pipeline to be fully ready
         self.connected = False
-        for attempt in range(10):
+        for attempt in range(30):
             ret, frame = self.cap.read()
             if ret:
                 self.connected = True
                 self.get_logger().info("Connected to RTSP stream")
                 break
-            self.get_logger().warn(f"Waiting for RTSP connection (attempt {attempt+1}/10)...")
-            time.sleep(0.5)
+            self.get_logger().warn(f"Waiting for RTSP connection (attempt {attempt+1}/30)...")
+            time.sleep(1.0)
         
         if not self.connected:
             self.get_logger().error("Failed to connect to RTSP stream after 10 attempts")

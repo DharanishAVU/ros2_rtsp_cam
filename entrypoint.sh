@@ -4,7 +4,7 @@ set -e
 # Source ROS2
 source /opt/ros/humble/setup.bash
 
-DEVICE="${DEVICE:-/dev/video-front}"
+DEVICE="${DEVICE:-/dev/video-side-front}"
 FRAME_ID="${FRAME_ID:-camera_optical_frame}"
 CAMERA_NAME="${CAMERA_NAME:-camera}"
 CAMERA_INFO_FILE="${CAMERA_INFO_FILE:-/etc/camera_info.yaml}"
@@ -67,7 +67,8 @@ echo "Starting ROS2 RTSP consumer..."
 ROS_PID=$!
 
 # Wait for one of the main processes to fail
-wait -n $MTX_PID $GST_PID $ROS_PID
+# Use || true so set -e doesn't abort before the cleanup kill
+wait -n $MTX_PID $GST_PID $ROS_PID || true
 
 # Kill remaining processes
 kill $MTX_PID $GST_PID $ROS_PID 2>/dev/null || true
