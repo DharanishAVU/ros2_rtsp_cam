@@ -40,10 +40,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install MediaMTX
-RUN wget -q https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/mediamtx_v1.9.0_linux_amd64.tar.gz \
-    && tar -xzf mediamtx_v1.9.0_linux_amd64.tar.gz \
+RUN wget -q https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/mediamtx_v1.9.0_linux_arm64.tar.gz \
+    && tar -xzf mediamtx_v1.9.0_linux_arm64.tar.gz \
     && mv mediamtx /usr/local/bin/ \
-    && rm mediamtx_v1.9.0_linux_amd64.tar.gz
+    && rm mediamtx_v1.9.0_linux_arm64.tar.gz
 
 # Install Python dependencies for ROS2 camera publisher
 # Pin numpy<2 for cv_bridge compatibility

@@ -181,44 +181,11 @@ rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp
 - Container runtime typically needs NVIDIA runtime support enabled
 - The ROS2 OpenCV consumer can stay unchanged; only the RTSP-producing GStreamer path needs Jetson-specific acceleration
 
-### Current Jetson Variant Status (Latest)
-
-A separate Jetson-specific folder now exists: `jetson_ros2_rtsp_cam/`.
-
-Applied changes in that folder:
-
-- `docker-compose.yml`
-  - `runtime: nvidia` enabled
-  - `privileged: true` enabled for reliable v4l2/NVIDIA device access on Jetson
-  - camera device set to `/dev/video-front`
-  - defaults set to `1920x1080@60`
-
-- `entrypoint.sh`
-  - switched to Jetson-oriented pipeline using:
-    - `v4l2src` (USB camera source)
-    - `image/jpeg` caps for MJPG camera mode
-    - `jpegdec` -> `nvvidconv`
-    - `video/x-raw(memory:NVMM),format=NV12`
-    - `nvv4l2h264enc`
-
-- `Dockerfile`
-  - MediaMTX architecture mismatch was fixed for Jetson
-  - verified release asset for v1.9.0 is:
-    - `mediamtx_v1.9.0_linux_arm64v8.tar.gz`
-  - note: `mediamtx_v1.9.0_linux_arm64.tar.gz` returns 404 for v1.9.0
-
-### Validation Notes
-
-- Asset URL check was performed from the workspace:
-  - `linux_arm64v8` returned HTTP 200
-  - `linux_arm64` returned HTTP 404
-- This confirms the Dockerfile must use `arm64v8` for MediaMTX v1.9.0 on Jetson.
-
 ### Status
 
-- `ros2_rtsp_cam/` remains the stable laptop baseline
-- `jetson_ros2_rtsp_cam/` contains the isolated Jetson-specific deltas
-- Final runtime validation should still be done on target Jetson hardware/JetPack
+- This is documented guidance only
+- The production files in this repository were intentionally left unchanged
+- Any Jetson-specific variant should be validated on the target JetPack version because plugin names and caps can vary by release
 
 ## References
 
@@ -227,12 +194,3 @@ Applied changes in that folder:
 - GStreamer 1.0: Industry standard media framework
 - ROS2 Humble: Stable LTS release, CycloneDDS middleware
 - OpenCV: cv2.VideoCapture + FFmpeg for robust RTSP decoding
-
-
-
-```
-RUN wget -q https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/mediamtx_v1.9.0_linux_arm64v8.tar.gz \
-    && tar -xzf mediamtx_v1.9.0_linux_arm64v8.tar.gz \
-    && mv mediamtx /usr/local/bin/ \
-    && rm mediamtx_v1.9.0_linux_arm64v8.tar.gz
-```

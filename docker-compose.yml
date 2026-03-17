@@ -8,13 +8,14 @@ services:
     
     # Network mode for ROS2 DDS discovery
     network_mode: host
+    runtime: nvidia
     
     # CRITICAL: pass the camera device into the container
     devices:
-      - /dev/video4:/dev/video4
+      - /dev/video-front:/dev/video-front
     
-    # Needed for v4l2 device access
-    privileged: false
+    # Needed for v4l2/NVIDIA device access on Jetson
+    privileged: true
     group_add:
       - video
     
@@ -23,10 +24,10 @@ services:
       - GST_DEBUG=2
       
       # Camera parameters (compatible with stream_simple.sh)
-      - DEVICE=/dev/video4
+      - DEVICE=/dev/video-front
       - WIDTH=1920
       - HEIGHT=1080
-      - FRAMERATE=30
+      - FRAMERATE=60
       
       # ROS2 mode: set to 1 for combined RTSP+ROS2, 0 for RTSP-only
       - ROS2_ENABLED=1

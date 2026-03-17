@@ -4,13 +4,13 @@ set -e
 # Source ROS2
 source /opt/ros/humble/setup.bash
 
-DEVICE="${DEVICE:-/dev/video4}"
+DEVICE="${DEVICE:-/dev/video-front}"
 FRAME_ID="${FRAME_ID:-camera_optical_frame}"
 CAMERA_NAME="${CAMERA_NAME:-camera}"
 CAMERA_INFO_FILE="${CAMERA_INFO_FILE:-/etc/camera_info.yaml}"
 WIDTH="${WIDTH:-1920}"
 HEIGHT="${HEIGHT:-1080}"
-FRAMERATE="${FRAMERATE:-30}"
+FRAMERATE="${FRAMERATE:-60}"
 ROS2_ENABLED="${ROS2_ENABLED:-1}"
 
 echo "Starting MediaMTX RTSP server..."
@@ -40,11 +40,11 @@ done
 echo "Starting GStreamer RTSP pipeline..."
 gst-launch-1.0 -v \
   v4l2src device="$DEVICE" io-mode=2 do-timestamp=true ! \
-  image/jpeg,width="$WIDTH",height="$HEIGHT",framerate="$FRAMERATE"/1 ! \
+  'image/jpeg,width=(int)1920,height=(int)1080,framerate=(fraction)60/1' ! \
   jpegdec ! \
-  videoconvert ! \
-  video/x-raw,format=I420,width="$WIDTH",height="$HEIGHT",framerate="$FRAMERATE"/1 ! \
-  x264enc tune=zerolatency bitrate=8000 speed-preset=ultrafast key-int-max=30 ! \
+  nvvidconv ! \
+  'video/x-raw(memory:NVMM),format=(string)NV12' ! \
+  nvv4l2h264enc preset-level=1 control-rate=1 bitrate=2000000 ! \
   h264parse ! \
   rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp &
 
