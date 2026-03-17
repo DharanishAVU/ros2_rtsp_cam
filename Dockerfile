@@ -46,11 +46,14 @@ RUN wget -q https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/medi
     && rm mediamtx_v1.9.0_linux_arm64v8.tar.gz
 
 # Install Python dependencies for ROS2 camera publisher
-# Pin numpy<2 for cv_bridge compatibility
-RUN pip3 install --no-cache-dir \
+# Use apt OpenCV so Python bindings include GStreamer backend support.
+# Pin numpy<2 for cv_bridge compatibility.
+RUN apt-get update && apt-get install -y \
+    python3-opencv \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir \
     "numpy<2" \
-    pyyaml \
-    opencv-python-headless
+    pyyaml
 
 # Setup ROS2 environment
 RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
