@@ -39,7 +39,14 @@ services:
       - DEVICE=/dev/video-side-front
       - WIDTH=1920
       - HEIGHT=1080
-      - FRAMERATE=60
+      - FRAMERATE=30
+      - ROS_WIDTH=1920
+      - ROS_HEIGHT=1080
+      - ROS_FRAMERATE=30
+      - RTSP_WIDTH=1280
+      - RTSP_HEIGHT=720
+      - RTSP_FRAMERATE=30
+      - USE_HW_MJPEG_DECODER=1
       
       # ROS2 mode: set to 1 for combined RTSP+ROS2, 0 for RTSP-only
       - ROS2_ENABLED=1
