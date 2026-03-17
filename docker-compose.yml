@@ -1,0 +1,41 @@
+services:
+  rtsp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rtsp-camera
+    restart: unless-stopped
+    
+    # Network mode for ROS2 DDS discovery
+    network_mode: host
+    
+    # CRITICAL: pass the camera device into the container
+    devices:
+      - /dev/video4:/dev/video4
+    
+    # Needed for v4l2 device access
+    privileged: false
+    group_add:
+      - video
+    
+    environment:
+      # GStreamer settings
+      - GST_DEBUG=2
+      
+      # Camera parameters (compatible with stream_simple.sh)
+      - DEVICE=/dev/video4
+      - WIDTH=1920
+      - HEIGHT=1080
+      - FRAMERATE=30
+      
+      # ROS2 mode: set to 1 for combined RTSP+ROS2, 0 for RTSP-only
+      - ROS2_ENABLED=1
+      
+      # ROS2 DDS configuration
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      
+      # Python error handling for better diagnostics
+      - PYTHONFAULTHANDLER=1
+    
+    shm_size: "256mb"
