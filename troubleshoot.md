@@ -252,3 +252,153 @@ Updated docker-compose.yml:
 - `ROS_FRAMERATE=30`: Adjust ROS publish rate (default 30 Hz stable for ArUco at 1080p).
 - `RTSP_FRAMERATE=30`: Adjust RTSP stream rate independently (decoupled from ROS via tee).
 - `ROS_WIDTH=1920, ROS_HEIGHT=1080`: Full-res ROS for ArUco detail; RTSP can downscale separately.
+
+---
+
+## 10) Development Journey & Architecture Rationale
+
+### Overview
+The camera streaming + ROS publishing system evolved through multiple architectural phases, each phase solving fundamental constraints while maintaining stability and performance.
+
+### Phase 1: Initial Architecture Problem (Segmentation Fault)
+**What We Tried:**
+- Single process running GStreamer pipeline + ROS2 executor in same thread using tee branching for parallel output.
+- Goal: Minimize process overhead, share decoded frame data between RTSP and ROS topics.
+
+**Why It Failed:**
+- GStreamer uses GLib event loop (mainloop-based, blocking I/O)
+- ROS2 Humble uses rclpy executor (thread-pool based, periodic spinners)
+- When both run in same process, they conflict at C/C++ level with incompatible threading models
+- Result: Segmentation fault in `rclpy/executors.py:645` when executor tried to process callbacks while GLib mainloop held locks
+
+**Lesson Learned:**
+Two event loops with different threading models cannot safely share the same Python/C process boundary. This is a fundamental constraint, not a coding bug.
+
+### Phase 2: Hybrid Process Breakthrough (Process Isolation)
+**What We Implemented:**
+- Separate GStreamer pipeline into background service (entrypoint.sh)
+- Separate ROS2 publisher into independent Python process (camera_publisher.py)
+- Contract between them: RTSP stream over localhost:8554 (standard protocol)
+
+**Why It Works:**
+- Each process has own event loop + threading model (no C++ layer conflicts)
+- RTSP is stable, proven protocol with clear semantics (no shared memory tricks needed)
+- Graceful degradation: if one process fails, other continues functioning
+- Industry standard pattern (e.g., VLC separates encoders from viewers)
+
+**Trade-off Accepted:**
+- Added one re-decode step: ROS publisher reads RTSP stream, OpenCV FFmpeg backend re-decodes H.264
+- CPU cost: ~120% python3 load (re-decode bottleneck)
+- Latency: 2-3 frames (RTSP buffering + re-decode pipeline)
+- Solution worked, but left optimization opportunity
+
+### Phase 3: SHM Tee Branching (Low-Latency ROS Path)
+**What We Implemented:**
+- GStreamer tee branching: decode once, send to multiple outputs
+  - RTSP branch: H.264 encode at downscaled resolution (1280×720)
+  - ROS SHM branch: direct raw frame to shared-memory socket (1920×1080)
+- ROS publisher reads SHM directly, bypassing RTSP re-decode entirely
+
+**Why It Helped:**
+- SHM is zero-copy between processes on same host (direct mmap)
+- Eliminates RTSP re-decode from ROS pipeline (python3 CPU dropped from ~120% to ~67%)
+- ROS publish rate climbed from ~2 Hz (bottlenecked by decode) to ~28-30 Hz (real 30 fps source)
+- Maintained RTSP output at independent resolution (1280×720 for bandwidth efficiency)
+
+**Architecture Lesson:**
+Per-branch pipeline optimization allows decoupled tuning: one feed (source @ 1920×1080@30fps) can serve multiple consumers with different quality/rate profiles without replicating the decode step.
+
+### Phase 4: Hardware MJPEG Decode (GPU Acceleration)
+**What We Observed:**
+- SHM tee branching stable at 30 Hz, but gst-launch CPU remained high (~100%)
+- Root cause: jpegdec plugin is CPU-bound; decoding 1920×1080 MJPEG at 30 fps taxed single-core performance
+
+**What We Implemented:**
+- Conditional hardware decoder selection via USE_HW_MJPEG_DECODER flag
+  - Hardware path (primary): nvv4l2decoder with automatic NVMM format normalization via nvvidconv
+  - Software fallback (safety): jpegdec if hardware unavailable at startup
+- Caps negotiation fix: inserted nvvidconv immediately post-decoder to normalize I420 NVMM → NV12 (mismatched formats were causing early pipeline failures)
+
+**Why It Helped:**
+- nvv4l2decoder offloads JPEG decode to GPU NVDEC core, freeing CPU cycles
+- gst-launch CPU reduced from ~100% to ~87.5% (headroom for future features)
+- python3 CPU reduced from ~67% to ~56.2% (lighter passive load from tee-fed SHM pipe)
+- ROS publish rate remained stable at 29-30 Hz (decode faster, no backlog)
+
+**Backward Compatibility:**
+- Automatic fallback to jpegdec preserves functionality on hardware without NVIDIA JetPack or older Jetson models
+- USE_HW_MJPEG_DECODER=0 allows forced software decode for debugging on problematic hardware
+
+### Architecture Summary
+
+```
+USB Camera (MJPEG, 1920×1080@30fps)
+  ↓
+v4l2src (frame capture)
+  ↓
+[nvv4l2decoder (GPU) OR jpegdec (CPU) fallback]
+  ↓
+nvvidconv (caps normalization: I420 NVMM → NV12 / SHM RGB)
+  ↓
+tee (zero-copy branching)
+  ├─ RTSP Branch
+  │   ├─ nvvidconv (scale to 1280×720, NVMM NV12)
+  │   └─ nvv4l2h264enc + rtspclientsink → MediaMTX :8554
+  │
+  └─ ROS SHM Branch
+      ├─ videoconvert (normalized → RGB 1920×1080)
+      └─ shmsink (/tmp/ros_frames) → camera_publisher.py
+```
+
+**ROS2 Publisher Path:**
+
+```
+camera_publisher.py (separate process)
+  ├─ SHM Primary Path (active)
+  │   ├─ shmsrc /tmp/ros_frames
+  │   ├─ videoconvert RGB → BGR
+  │   └─ appsink (low-latency, drop late frames)
+  │       └─ publish /camera/image_raw @ 30 Hz
+  │
+  └─ RTSP Fallback Path (if SHM unavailable)
+      ├─ cv2.VideoCapture("rtsp://localhost:8554/camera")
+      ├─ cv2.cvtColor(BGR → RGB)
+      └─ publish /camera/image_raw @ 30 Hz (retry every 30s)
+```
+
+### Configuration Knobs (Environment Variables)
+
+| Variable | Default | Phase | Purpose |
+|----------|---------|-------|---------|
+| `USE_HW_MJPEG_DECODER` | 1 | 4 | hardware-first decode (nvv4l2decoder) |
+| `ROS_FRAMERATE` | 30 | 3 | SHM branch publish rate (Hz) |
+| `RTSP_FRAMERATE` | 30 | 3 | RTSP branch stream rate (Hz) |
+| `ROS_WIDTH` | 1920 | 3 | ROS full-detail capture width |
+| `ROS_HEIGHT` | 1080 | 3 | ROS full-detail capture height |
+| `RTSP_WIDTH` | 1280 | 3 | RTSP bandwidth-reduced width |
+| `RTSP_HEIGHT` | 720 | 3 | RTSP bandwidth-reduced height |
+| `FRAMERATE` | 30 | all | Source capture framerate (input to v4l2src) |
+
+### Why Multi-Phase Evolution Matters
+
+Each phase locked in a constraint or revealed a limitation:
+
+1. **Phase 1 → 2**: Process isolation is mandatory due to event loop incompatibility (C++ library limitation, not solvable in Python)
+2. **Phase 2 → 3**: SHM branching unlocks low-latency ROS without sacrificing RTSP (added zero-copy path)
+3. **Phase 3 → 4**: Hardware decode reduces CPU further without architectural changes (orthogonal optimization)
+
+Result: Final system is **stable**, **performant**, **fault-tolerant** (both paths available), and **tunable** (per-branch parameters).
+
+### Known Constraints & Workarounds
+
+- **GStreamer + ROS2 in single process**: Not feasible due to event loop conflict (Phase 1 discovery)
+- **RTSP H.264 re-decode cost**: Eliminated via SHM branch (Phase 3 solution)
+- **CPU-bound JPEG decode**: Mitigated via hardware decoder + fallback (Phase 4 solution)
+- **CycloneDDS multicast blocked**: Solved via unicast peer configuration (see Section 6)
+
+### Deprecated Experimental Code
+
+See `development.md` for earlier attempts in `final/` folder:
+- `ros2_gst_publisher.py` — direct threading attempt (crashed)
+- `ros2_gst_publisher_clean.py` — queue-based sync attempt (crashed in rclpy)
+- `stream_test_gst.sh` — pure GStreamer validation script (kept for reference)
