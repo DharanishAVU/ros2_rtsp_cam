@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Match your JetPack 6 version: r36.3.0 (JP6.0 GA) or r36.4.0 (JP6.1)
+        L4T_TAG: r36.4.0
     container_name: rtsp-camera
     restart: unless-stopped
     
@@ -18,10 +21,9 @@ services:
     # Expose all /dev entries (cameras, GPU, etc.) into the container
     volumes:
       - /dev/:/dev/
-      # NVIDIA hw GStreamer plugins (nvvidconv, nvv4l2h264enc) bind-mounted from JetPack host
-      - /usr/lib/aarch64-linux-gnu/gstreamer-1.0:/usr/lib/aarch64-linux-gnu/gstreamer-1.0:ro
-      - /usr/lib/aarch64-linux-gnu/tegra:/usr/lib/aarch64-linux-gnu/tegra:ro
-      - /usr/lib/aarch64-linux-gnu/tegra-eglstream-libs:/usr/lib/aarch64-linux-gnu/tegra-eglstream-libs:ro
+      # JetPack 6: NVIDIA GStreamer plugins (nvv4l2decoder, nvvidconv, nvv4l2h264enc) are
+      # installed inside the container via nvidia-l4t-gstreamer — no host bind-mounts needed.
+      # (JP5 bind-mount approach broke in JP6 due to library path reorganisation in L4T R36.x)
 
     deploy:
       resources:

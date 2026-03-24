@@ -48,50 +48,111 @@ done
 echo "Starting GStreamer RTSP pipeline..."
 rm -f "$ROS_SHM_SOCKET"
 
+# Detect H264 encoder.
+# nvv4l2h264enc requires NVENC hardware — not present on Orin Nano 4GB/8GB.
+# Falls back to software x264enc if unavailable.
+if gst-inspect-1.0 nvv4l2h264enc >/dev/null 2>&1; then
+    USE_HW_H264=1
+    echo "Using H264 encoder: nvv4l2h264enc (hardware)"
+else
+    USE_HW_H264=0
+    echo "nvv4l2h264enc not available (Orin Nano?), falling back to x264enc (software)"
+fi
+
 if [ "$USE_HW_MJPEG_DECODER" = "1" ] && command -v gst-inspect-1.0 >/dev/null 2>&1 && gst-inspect-1.0 nvv4l2decoder >/dev/null 2>&1; then
-        echo "Using decoder: nvv4l2decoder mjpeg=1"
-        gst-launch-1.0 -v \
-            v4l2src device="$DEVICE" io-mode=2 do-timestamp=true ! \
-                "image/jpeg,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
-            nvv4l2decoder mjpeg=1 ! \
-                nvvidconv ! \
-                "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
-            tee name=t \
-                t. ! queue leaky=downstream max-size-buffers=2 ! \
+        echo "Using decoder: jpegparse ! nvv4l2decoder mjpeg=1 (hardware)"
+        # jpegparse before nvv4l2decoder is required for MJPEG on JetPack 6 (L4T R36+)
+        # and is backwards-compatible with JetPack 5.
+        if [ "$USE_HW_H264" = "1" ]; then
+            gst-launch-1.0 -v \
+                v4l2src device="$DEVICE" io-mode=2 do-timestamp=true ! \
+                    "image/jpeg,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
+                jpegparse ! \
+                nvv4l2decoder mjpeg=1 ! \
                     nvvidconv ! \
-                    "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$RTSP_WIDTH,height=(int)$RTSP_HEIGHT,framerate=(fraction)$RTSP_FRAMERATE/1" ! \
-                    nvv4l2h264enc preset-level=1 control-rate=1 bitrate=2000000 ! \
-                    h264parse ! \
-                    rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp \
-                t. ! queue leaky=downstream max-size-buffers=1 ! \
+                    "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
+                tee name=t \
+                    t. ! queue leaky=downstream max-size-buffers=2 ! \
+                        nvvidconv ! \
+                        "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$RTSP_WIDTH,height=(int)$RTSP_HEIGHT,framerate=(fraction)$RTSP_FRAMERATE/1" ! \
+                        nvv4l2h264enc preset-level=1 control-rate=1 bitrate=2000000 ! \
+                        h264parse ! \
+                        rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp \
+                    t. ! queue leaky=downstream max-size-buffers=1 ! \
+                        nvvidconv ! \
+                        "video/x-raw,format=(string)I420,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
+                        videoconvert ! \
+                        "video/x-raw,format=(string)RGB,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
+                        shmsink socket-path="$ROS_SHM_SOCKET" \
+                            shm-size=67108864 wait-for-connection=false sync=false async=false &
+        else
+            # SW H264 encode: nvvidconv to bring out of NVMM, then videoscale + x264enc
+            gst-launch-1.0 -v \
+                v4l2src device="$DEVICE" io-mode=2 do-timestamp=true ! \
+                    "image/jpeg,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
+                jpegparse ! \
+                nvv4l2decoder mjpeg=1 ! \
                     nvvidconv ! \
-                    "video/x-raw,format=(string)I420,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
-                    videoconvert ! \
-                    "video/x-raw,format=(string)RGB,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
-                    shmsink socket-path="$ROS_SHM_SOCKET" \
-                        shm-size=67108864 wait-for-connection=false sync=false async=false &
+                    "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
+                tee name=t \
+                    t. ! queue leaky=downstream max-size-buffers=2 ! \
+                        nvvidconv ! \
+                        "video/x-raw,format=(string)I420,width=(int)$RTSP_WIDTH,height=(int)$RTSP_HEIGHT,framerate=(fraction)$RTSP_FRAMERATE/1" ! \
+                        videoconvert ! \
+                        x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast ! \
+                        h264parse ! \
+                        rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp \
+                    t. ! queue leaky=downstream max-size-buffers=1 ! \
+                        nvvidconv ! \
+                        "video/x-raw,format=(string)I420,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
+                        videoconvert ! \
+                        "video/x-raw,format=(string)RGB,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
+                        shmsink socket-path="$ROS_SHM_SOCKET" \
+                            shm-size=67108864 wait-for-connection=false sync=false async=false &
+        fi
 else
         if [ "$USE_HW_MJPEG_DECODER" = "1" ]; then
                 echo "nvv4l2decoder not available, falling back to jpegdec"
         fi
-        echo "Using decoder: jpegdec"
-        gst-launch-1.0 -v \
-            v4l2src device="$DEVICE" io-mode=2 do-timestamp=true ! \
-                "image/jpeg,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
-            jpegdec ! \
-                "video/x-raw,format=(string)I420,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
-            tee name=t \
-                t. ! queue leaky=downstream max-size-buffers=2 ! \
-                    nvvidconv ! \
-                    "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$RTSP_WIDTH,height=(int)$RTSP_HEIGHT,framerate=(fraction)$RTSP_FRAMERATE/1" ! \
-                    nvv4l2h264enc preset-level=1 control-rate=1 bitrate=2000000 ! \
-                    h264parse ! \
-                    rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp \
-                t. ! queue leaky=downstream max-size-buffers=1 ! \
-                    videoconvert ! \
-                    "video/x-raw,format=(string)RGB,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
-                    shmsink socket-path="$ROS_SHM_SOCKET" \
-                        shm-size=67108864 wait-for-connection=false sync=false async=false &
+        echo "Using decoder: jpegdec (software)"
+        if [ "$USE_HW_H264" = "1" ]; then
+            gst-launch-1.0 -v \
+                v4l2src device="$DEVICE" io-mode=2 do-timestamp=true ! \
+                    "image/jpeg,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
+                jpegdec ! \
+                    "video/x-raw,format=(string)I420,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
+                tee name=t \
+                    t. ! queue leaky=downstream max-size-buffers=2 ! \
+                        nvvidconv ! \
+                        "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$RTSP_WIDTH,height=(int)$RTSP_HEIGHT,framerate=(fraction)$RTSP_FRAMERATE/1" ! \
+                        nvv4l2h264enc preset-level=1 control-rate=1 bitrate=2000000 ! \
+                        h264parse ! \
+                        rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp \
+                    t. ! queue leaky=downstream max-size-buffers=1 ! \
+                        videoconvert ! \
+                        "video/x-raw,format=(string)RGB,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
+                        shmsink socket-path="$ROS_SHM_SOCKET" \
+                            shm-size=67108864 wait-for-connection=false sync=false async=false &
+        else
+            gst-launch-1.0 -v \
+                v4l2src device="$DEVICE" io-mode=2 do-timestamp=true ! \
+                    "image/jpeg,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
+                jpegdec ! \
+                    "video/x-raw,format=(string)I420,width=(int)$WIDTH,height=(int)$HEIGHT,framerate=(fraction)$FRAMERATE/1" ! \
+                tee name=t \
+                    t. ! queue leaky=downstream max-size-buffers=2 ! \
+                        videoscale ! \
+                        "video/x-raw,format=(string)I420,width=(int)$RTSP_WIDTH,height=(int)$RTSP_HEIGHT,framerate=(fraction)$RTSP_FRAMERATE/1" ! \
+                        videoconvert ! \
+                        x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast ! \
+                        h264parse ! \
+                        rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp \
+                    t. ! queue leaky=downstream max-size-buffers=1 ! \
+                        videoconvert ! \
+                        "video/x-raw,format=(string)RGB,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
+                        shmsink socket-path="$ROS_SHM_SOCKET" \
+                            shm-size=67108864 wait-for-connection=false sync=false async=false &
+        fi
 fi
 
 GST_PID=$!

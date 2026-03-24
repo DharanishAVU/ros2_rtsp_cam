@@ -1,4 +1,9 @@
-FROM ubuntu:22.04
+# Match this tag to your JetPack 6 version:
+#   JP 6.0 GA  -> r36.3.0
+#   JP 6.1     -> r36.4.0
+# Check with: cat /etc/nv_tegra_release
+ARG L4T_TAG=r36.4.0
+FROM nvcr.io/nvidia/l4t-base:${L4T_TAG}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
@@ -22,7 +27,15 @@ RUN apt-get update && apt-get install -y \
     libopencv-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install GStreamer and RTSP tools
+# Install NVIDIA hardware GStreamer plugins from the Jetson apt repo
+# (nvidia-l4t-gstreamer provides nvv4l2decoder, nvvidconv, nvv4l2h264enc)
+# The l4t-base image has the Jetson apt repo pre-configured.
+RUN apt-get update && apt-get install -y \
+    nvidia-l4t-gstreamer \
+    && ldconfig \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install open-source GStreamer community plugins and RTSP tools
 RUN apt-get update && apt-get install -y \
     gstreamer1.0-tools \
     gstreamer1.0-plugins-base \
