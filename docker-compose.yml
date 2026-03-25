@@ -4,8 +4,11 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Match your JetPack 6 version: r36.3.0 (JP6.0 GA) or r36.4.0 (JP6.1)
-        L4T_TAG: r36.4.0
+        # r36.2.0 = JP6.0 (L4T R36.2.0) — guest-pullable from NGC, no auth required.
+        # Base: nvcr.io/nvidia/l4t-jetpack (self-contained NVIDIA GStreamer plugins).
+        # ABI-compatible with JP6.0 GA (r36.3.0) and JP6.1 (r36.4.0) hosts.
+        # Check your host version with: cat /etc/nv_tegra_release
+        L4T_TAG: r36.2.0
     container_name: rtsp-camera
     restart: unless-stopped
     
@@ -22,8 +25,8 @@ services:
     volumes:
       - /dev/:/dev/
       # JetPack 6: NVIDIA GStreamer plugins (nvv4l2decoder, nvvidconv, nvv4l2h264enc) are
-      # installed inside the container via nvidia-l4t-gstreamer — no host bind-mounts needed.
-      # (JP5 bind-mount approach broke in JP6 due to library path reorganisation in L4T R36.x)
+      # baked into the l4t-jetpack base image — no host bind-mounts needed.
+      # Container is self-contained and independent of host JetPack version.
 
     deploy:
       resources:
@@ -57,7 +60,7 @@ services:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       # Unicast peer discovery — avoids multicast which is blocked on most WiFi/LAN setups
-      - CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces></General><Discovery><Peers><Peer address="10.10.111.6"/></Peers></Discovery></Domain></CycloneDDS>
+      - CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces></General><Discovery><Peers><Peer address="192.168.1.1"/></Peers></Discovery></Domain></CycloneDDS>
       
       # Python error handling for better diagnostics
       - PYTHONFAULTHANDLER=1

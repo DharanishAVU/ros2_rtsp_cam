@@ -1,9 +1,16 @@
-# Match this tag to your JetPack 6 version:
-#   JP 6.0 GA  -> r36.3.0
-#   JP 6.1     -> r36.4.0
-# Check with: cat /etc/nv_tegra_release
-ARG L4T_TAG=r36.4.0
-FROM nvcr.io/nvidia/l4t-base:${L4T_TAG}
+# JetPack 6 / L4T R36.x — self-contained container with all NVIDIA GStreamer
+# hardware plugins baked in. No host library bind-mounts needed.
+#
+# Base image: nvcr.io/nvidia/l4t-jetpack (guest-pullable from NGC, no auth)
+# Includes: nvidia-l4t-gstreamer (nvv4l2decoder, nvvidconv, nvv4l2h264enc)
+#           plus CUDA runtime, TensorRT, cuDNN (unused but harmless)
+#
+# r36.2.0 is ABI-compatible with JP6.0 GA (r36.3.0) and JP6.1 (r36.4.0) hosts
+# (same Ubuntu 22.04 / GLIBC 2.35). One image tag works across all JP6 versions.
+#
+# Check your host version with: cat /etc/nv_tegra_release
+ARG L4T_TAG=r36.2.0
+FROM nvcr.io/nvidia/l4t-jetpack:${L4T_TAG}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
@@ -27,15 +34,10 @@ RUN apt-get update && apt-get install -y \
     libopencv-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install NVIDIA hardware GStreamer plugins from the Jetson apt repo
-# (nvidia-l4t-gstreamer provides nvv4l2decoder, nvvidconv, nvv4l2h264enc)
-# The l4t-base image has the Jetson apt repo pre-configured.
-RUN apt-get update && apt-get install -y \
-    nvidia-l4t-gstreamer \
-    && ldconfig \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install open-source GStreamer community plugins and RTSP tools
+# Install open-source GStreamer community plugins, RTSP tools, and kmod.
+# NVIDIA hardware GStreamer plugins (nvv4l2decoder, nvvidconv, nvv4l2h264enc)
+# are already installed in the l4t-jetpack base image — no separate install needed.
+# kmod provides lsmod, required by nvv4l2h264enc on JetPack 6.2+ at runtime.
 RUN apt-get update && apt-get install -y \
     gstreamer1.0-tools \
     gstreamer1.0-plugins-base \
@@ -50,6 +52,7 @@ RUN apt-get update && apt-get install -y \
     netcat-openbsd \
     wget \
     v4l-utils \
+    kmod \
     && rm -rf /var/lib/apt/lists/*
 
 # Install MediaMTX
