@@ -3,26 +3,26 @@
 Streams a USB camera as RTSP and publishes ROS2 image topics simultaneously using hardware-accelerated MJPEG decode on Jetson.
 
 - **RTSP**: `rtsp://localhost:8554/camera` (H.264, downscaled to 1280×720 @ 30fps)
-- **ROS2**: `/camera/image_raw` + `/camera/camera_info` (1920×1080 @ 30fps, RGB, `sensor_msgs/Image`)
+- **ROS2**: `/camera/image_raw` + `/camera/camera_info` (1920×1080 @ 30fps, BGR8, `sensor_msgs/Image`)
 - **Camera**: 1920×1080 @ 30fps MJPEG source (hardware-decoded on GPU)
 - **Pipeline**: GStreamer tee branching (RTSP + SHM paths), shared-memory frame delivery to ROS2
 
 ## Architecture
 
 ```
-v4l2src (MJPEG) 
+v4l2src (MJPEG)
    ↓
 [nvv4l2decoder OR jpegdec]  ← hardware-first, software fallback
    ↓
 nvvidconv (normalize caps)
    ↓
 tee branch
-  ├─ RTSP path: nvvidconv → h264enc → rtspclientsink (1280×720 @ 30fps)
-  └─ ROS path:  videoconvert → RGB → shmsink (1920×1080 @ 30fps)
+  ├─ RTSP path: nvvidconv → nvv4l2h264enc (HW) → rtspclientsink (1280×720 @ 30fps)
+  └─ ROS path:  nvvidconv (BGRx, GPU) → videoconvert (RGB) → shmsink (1920×1080 @ 30fps)
    ↓
 camera_publisher.py (SHM-first, RTSP fallback)
    ↓
-/camera/image_raw @ 29-30 Hz
+/camera/image_raw (bgr8) @ 29-30 Hz
 ```
 
 ## Quick Start
@@ -101,19 +101,23 @@ environment:
 
 ### CPU Usage Reduction (Hardware Decode Strategy)
 
-Default configuration uses **hardware MJPEG decode (nvv4l2decoder)** on Jetson:
+Default configuration uses **hardware MJPEG decode (nvv4l2decoder)** and **hardware H264 encode (nvv4l2h264enc)** on Jetson, with GPU-accelerated color conversion (nvvidconv BGRx) on the ROS SHM branch:
 
-- **gst-launch CPU**: ~87.5% (down from ~100% with jpegdec)
-- **python3 CPU**: ~56.2% (reduced overhead)
+- **gst-launch CPU**: ~38% (down from ~96% with CPU color conversion)
+- **python3 CPU**: ~57% (eliminates BGR↔RGB conversion)
 - **ROS fps**: stable 29-30 Hz
 - **Latency**: minimal (SHM direct frame delivery)
 
-If hardware decoder is unavailable, automatic fallback to software jpegdec (CPU-bound, higher load).
+Hardware H264 encoder (nvv4l2h264enc / NVENC) is **required**. If unavailable (e.g. Orin Nano), the container will exit with an error.
+If hardware MJPEG decoder is unavailable, automatic fallback to software jpegdec (CPU-bound, higher load).
 
-To force software decode:
+To force software MJPEG decode:
 ```yaml
   - USE_HW_MJPEG_DECODER=0
 ```
+
+> **Note:** Software H264 encoding (x264enc) has been disabled. The commented-out pipelines
+> in `entrypoint.sh` can be restored if needed for devices without NVENC hardware.
 
 ### Resolution & Framerate Tuning
 
@@ -159,25 +163,13 @@ See [`troubleshoot.md`](troubleshoot.md) for detailed guides:
 - Verify `gst-launch` process shows hardware decoder path in startup logs.
 - Run `docker logs rtsp-camera | grep "Using decoder"` to confirm.
 - If jpegdec fallback active, check for nvidia plugins availability or hardware constraints.
-environment:
-  - DEVICE=/dev/video0
-```
+- Ensure hardware H264 encoder is detected: `docker logs rtsp-camera | grep "H264 encoder"`.
 
 ### Camera calibration
 
 Edit `camera_info.yaml` — loaded at startup from `/etc/camera_info.yaml` inside the container.
 
-## Architecture
-
-```
-v4l2src (MJPEG 1920×1080@30fps)
-  └─ jpegdec → videoconvert → x264enc → rtspclientsink → MediaMTX :8554
-camera_publisher.py reads rtsp://127.0.0.1:8554/camera via OpenCV
-  └─ publishes /camera/image_raw  (rgb8, 1920×1080)
-  └─ publishes /camera/camera_info
-```
-
-## Troubleshooting
+### Additional Common Issues
 
 **Device busy on startup** — another container is holding the camera:
 ```bash
@@ -189,3 +181,5 @@ docker compose up -d
 **No ROS2 topics on host** — container uses `network_mode: host`; ensure `ROS_DOMAIN_ID` matches.
 
 **v4l2bufferpool "not free" warnings** — non-fatal, safe to ignore.
+
+**nvv4l2h264enc not available** — container will exit with error. This device lacks NVENC hardware (e.g. Orin Nano). Re-enable the commented-out SW encoding pipelines in `entrypoint.sh`.

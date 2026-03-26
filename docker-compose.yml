@@ -60,7 +60,8 @@ services:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       # Unicast peer discovery — avoids multicast which is blocked on most WiFi/LAN setups
-      - CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces></General><Discovery><Peers><Peer address="192.168.1.1"/></Peers></Discovery></Domain></CycloneDDS>
+      # MaxMessageSize/FragmentSize raised for 1920×1080 image transport (~6 MB/frame)
+      - CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces><MaxMessageSize>65500B</MaxMessageSize><FragmentSize>65000B</FragmentSize></General><Discovery><Peers><Peer address="192.168.1.52"/></Peers></Discovery></Domain></CycloneDDS>
       
       # Python error handling for better diagnostics
       - PYTHONFAULTHANDLER=1

@@ -11,6 +11,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 import yaml
+import os
 import time
 
 class RTSPCameraPublisher(Node):
@@ -20,7 +21,8 @@ class RTSPCameraPublisher(Node):
         # Parameters from environment or defaults
         self.declare_parameter('rtsp_url', 'rtsp://127.0.0.1:8554/camera')
         self.declare_parameter('shm_socket', '/tmp/ros_frames')
-        self.declare_parameter('camera_info_file', '/etc/camera_info.yaml')
+        default_camera_info = os.path.join(os.path.dirname(__file__), 'camera_info.yaml')
+        self.declare_parameter('camera_info_file', default_camera_info)
         self.declare_parameter('frame_id', 'camera_optical_frame')
         self.declare_parameter('publish_rate', 30.0)
         self.declare_parameter('width', 1920)
@@ -90,6 +92,7 @@ class RTSPCameraPublisher(Node):
         self.bridge = CvBridge()
         
         # Load camera calibration
+        self.get_logger().info(f"Using camera_info_file: {self.camera_info_file}")
         self.camera_info = self.load_camera_info()
         self.camera_info.width = width
         self.camera_info.height = height
@@ -104,30 +107,52 @@ class RTSPCameraPublisher(Node):
     def load_camera_info(self):
         """Load camera calibration from YAML file"""
         try:
+            exists = os.path.exists(self.camera_info_file)
+            self.get_logger().info(f"Loading camera_info from {self.camera_info_file} (exists={exists})")
+            if not exists:
+                raise FileNotFoundError(f"Camera info file not found: {self.camera_info_file}")
+
             with open(self.camera_info_file, 'r') as f:
-                config = yaml.safe_load(f)
-            
+                config = yaml.safe_load(f) or {}
+
+            # If provided file lacks calibration data, try packaged camera_info.yaml as fallback
+            cam_mat = config.get('camera_matrix', {}) or {}
+            dist = config.get('distortion_coefficients', {}) or {}
+            needs_fallback = not cam_mat.get('data') or not dist.get('data')
+            if needs_fallback:
+                packaged = os.path.join(os.path.dirname(__file__), 'camera_info.yaml')
+                if os.path.exists(packaged):
+                    try:
+                        with open(packaged, 'r') as pf:
+                            pconf = yaml.safe_load(pf) or {}
+                        # merge missing keys
+                        if not cam_mat.get('data') and pconf.get('camera_matrix'):
+                            config['camera_matrix'] = pconf['camera_matrix']
+                        if not dist.get('data') and pconf.get('distortion_coefficients'):
+                            config['distortion_coefficients'] = pconf['distortion_coefficients']
+                        self.get_logger().info(f"Merged missing K/D from packaged camera_info: {packaged}")
+                    except Exception:
+                        self.get_logger().warn(f"Failed to read packaged camera_info.yaml at {packaged}")
+
             info = CameraInfo()
             info.header.frame_id = self.frame_id
             info.height = config.get('image_height', 1080)
             info.width = config.get('image_width', 1920)
-            info.distortion_model = 'plumb_bob'
-            
+            info.distortion_model = config.get('distortion_model', 'plumb_bob')
+
             # Camera matrix K (3x3)
-            if 'camera_matrix' in config:
-                info.k = config['camera_matrix'].get('data', 
-                    [1000, 0, 960, 0, 1000, 540, 0, 0, 1])
-            
+            cam_mat = config.get('camera_matrix', {}) or {}
+            info.k = cam_mat.get('data', [1000, 0, 960, 0, 1000, 540, 0, 0, 1])
+
             # Distortion coefficients D (1x5)
-            if 'distortion_coefficients' in config:
-                info.d = config['distortion_coefficients'].get('data', 
-                    [0, 0, 0, 0, 0])
-            
+            dist = config.get('distortion_coefficients', {}) or {}
+            info.d = dist.get('data', [0, 0, 0, 0, 0])
+
             self.get_logger().info(f"Loaded camera calibration: {info.width}x{info.height}")
             return info
         except Exception as e:
             self.get_logger().warn(f"Failed to load camera_info from {self.camera_info_file}: {e}")
-            
+
             # Return default calibration
             info = CameraInfo()
             info.header.frame_id = self.frame_id
@@ -136,7 +161,7 @@ class RTSPCameraPublisher(Node):
             info.distortion_model = 'plumb_bob'
             info.k = [1000, 0, 960, 0, 1000, 540, 0, 0, 1]
             info.d = [0, 0, 0, 0, 0]
-            
+
             self.get_logger().info("Using default camera calibration")
             return info
 
@@ -153,11 +178,7 @@ class RTSPCameraPublisher(Node):
 
         self.read_fail_count = 0
         
-        # SHM path is RGB already; RTSP fallback via FFmpeg is BGR.
-        if self.frame_is_bgr and frame.ndim == 3 and frame.shape[2] == 3:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        msg = self.bridge.cv2_to_imgmsg(frame, encoding='rgb8')
+        msg = self.bridge.cv2_to_imgmsg(frame, encoding='bgr8')
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.frame_id
         

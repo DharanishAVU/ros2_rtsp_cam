@@ -241,10 +241,10 @@ Updated docker-compose.yml:
 ### Validation / Outcome
 - Hardware pipeline starts successfully and connects SHM via shared-memory stream log.
 - ROS topic publish rate stable at ~29-30 Hz with hardware decode active.
-- CPU snapshot after hardware decode fix:
+- CPU snapshot after hardware decode fix (Phase 4 only, before Phase 5 optimizations):
   - gst-launch-1.0: ~87.5% (down from ~100% with jpegdec)
   - python3: ~56.2% (down from ~67% passive load)
-  - Combined CPU load reduced; headroom available for further optimization or load growth.
+  - Combined CPU load reduced; further optimized in Phase 5 (gst-launch down to ~38%).
 - Automatic fallback to jpegdec if nvv4l2decoder unavailable ensures robustness across hardware variants.
 
 ### Tuning Knobs
@@ -255,7 +255,52 @@ Updated docker-compose.yml:
 
 ---
 
-## 10) Development Journey & Architecture Rationale
+## 11) CycloneDDS large image transport over network
+
+### Problem
+After SHM fix restored full 1920×1080 ROS publishing, `ros2 topic echo /camera/image_raw` from a remote laptop showed:
+```
+sequence size exceeds remaining buffer
+```
+Images were not received despite topics being visible.
+
+### Root Cause
+Default CycloneDDS `MaxMessageSize` (14720 bytes) and `FragmentSize` (1344 bytes) are too small
+for efficient transport of 1920×1080 BGR8 frames (~6 MB/frame). The receiver could not reassemble
+the heavily fragmented message within default buffer limits.
+
+Previously this worked because SHM was failing and the publisher fell back to RTSP at 1280×720
+(~2.7 MB/frame), which stayed within limits.
+
+### Solution
+Increase `MaxMessageSize` and `FragmentSize` in CYCLONEDDS_URI on **both** Jetson and laptop.
+Values must include unit suffix (`B`) — CycloneDDS in ROS Humble warns on bare numbers.
+
+Note: `<Internal><ReceiveBufferSize>` is not a valid element in ROS Humble's CycloneDDS and will
+cause `rmw_create_node` to fail with "unknown element".
+
+### Implementation
+Updated docker-compose.yml CYCLONEDDS_URI:
+```xml
+<CycloneDDS>
+  <Domain>
+    <General>
+      <Interfaces><NetworkInterface autodetermine="true"/></Interfaces>
+      <MaxMessageSize>65500B</MaxMessageSize>
+      <FragmentSize>65000B</FragmentSize>
+    </General>
+    <Discovery>
+      <Peers><Peer address="REMOTE_IP"/></Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
+```
+
+The **same CYCLONEDDS_URI** (with appropriate peer IP) must be set on the receiving side (laptop container).
+
+---
+
+## 12) Development Journey & Architecture Rationale
 
 ### Overview
 The camera streaming + ROS publishing system evolved through multiple architectural phases, each phase solving fundamental constraints while maintaining stability and performance.
@@ -338,15 +383,16 @@ v4l2src (frame capture)
   ↓
 [nvv4l2decoder (GPU) OR jpegdec (CPU) fallback]
   ↓
-nvvidconv (caps normalization: I420 NVMM → NV12 / SHM RGB)
+nvvidconv (caps normalization: I420 NVMM → NV12)
   ↓
 tee (zero-copy branching)
   ├─ RTSP Branch
   │   ├─ nvvidconv (scale to 1280×720, NVMM NV12)
-  │   └─ nvv4l2h264enc + rtspclientsink → MediaMTX :8554
+  │   └─ nvv4l2h264enc (HW, required) + rtspclientsink → MediaMTX :8554
   │
   └─ ROS SHM Branch
-      ├─ videoconvert (normalized → RGB 1920×1080)
+      ├─ nvvidconv (NV12 → BGRx, GPU-accelerated color conversion + scale)
+      ├─ videoconvert (BGRx → RGB, cheap alpha strip)
       └─ shmsink (/tmp/ros_frames) → camera_publisher.py
 ```
 
@@ -356,14 +402,13 @@ tee (zero-copy branching)
 camera_publisher.py (separate process)
   ├─ SHM Primary Path (active)
   │   ├─ shmsrc /tmp/ros_frames
-  │   ├─ videoconvert RGB → BGR
+  │   ├─ videoconvert RGB → BGR (for OpenCV appsink compatibility)
   │   └─ appsink (low-latency, drop late frames)
-  │       └─ publish /camera/image_raw @ 30 Hz
+  │       └─ publish /camera/image_raw (bgr8) @ 30 Hz
   │
   └─ RTSP Fallback Path (if SHM unavailable)
       ├─ cv2.VideoCapture("rtsp://localhost:8554/camera")
-      ├─ cv2.cvtColor(BGR → RGB)
-      └─ publish /camera/image_raw @ 30 Hz (retry every 30s)
+      └─ publish /camera/image_raw (bgr8) @ 30 Hz
 ```
 
 ### Configuration Knobs (Environment Variables)
@@ -386,14 +431,47 @@ Each phase locked in a constraint or revealed a limitation:
 1. **Phase 1 → 2**: Process isolation is mandatory due to event loop incompatibility (C++ library limitation, not solvable in Python)
 2. **Phase 2 → 3**: SHM branching unlocks low-latency ROS without sacrificing RTSP (added zero-copy path)
 3. **Phase 3 → 4**: Hardware decode reduces CPU further without architectural changes (orthogonal optimization)
+4. **Phase 4 → 5**: GPU color conversion + eliminating redundant conversions cuts gst-launch CPU from ~96% to ~38%
 
-Result: Final system is **stable**, **performant**, **fault-tolerant** (both paths available), and **tunable** (per-branch parameters).
+Result: Final system is **stable**, **performant**, **fault-tolerant** (SHM + RTSP fallback), and **tunable** (per-branch parameters). Combined CPU usage reduced from ~156% (Phase 4) to ~95% (Phase 5).
+
+### Phase 5: HW-Only H264 Encoding + GPU Color Conversion (CPU Optimization)
+**What We Observed:**
+- With Phase 4 hardware MJPEG decode active, gst-launch still consumed ~96% CPU
+- Root cause 1: `videoconvert` in the ROS SHM branch was doing I420→RGB color conversion on CPU at 1920×1080@30fps (~186 MB/s)
+- Root cause 2: camera_publisher.py performed a double color conversion: GStreamer RGB→BGR (videoconvert), then Python BGR→RGB (cv2.cvtColor), then published as rgb8
+- Software H264 encoding (x264enc) fallback paths added unnecessary complexity
+
+**What We Implemented:**
+- **entrypoint.sh:**
+  - Require hardware H264 encoder (nvv4l2h264enc) — exit with error if unavailable
+  - Commented out all software H264 encoding (x264enc) pipelines
+  - Simplified from 4 pipeline variants (2×2 matrix) to 2 (HW vs SW MJPEG decode only)
+  - Changed ROS SHM branch: `nvvidconv` outputs BGRx (GPU-accelerated color conversion) instead of I420, then `videoconvert` does a cheap BGRx→RGB strip
+- **camera_publisher.py:**
+  - Publish as `bgr8` encoding directly instead of converting BGR→RGB and publishing as `rgb8`
+  - Eliminated `cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)` call entirely
+
+**Why It Helped:**
+- `nvvidconv` does NV12→BGRx conversion on GPU (was previously NV12→I420 on GPU + I420→RGB on CPU)
+- `videoconvert` BGRx→RGB is near-free (strip alpha byte) vs I420→RGB (full color space conversion)
+- Eliminating cv2.cvtColor in Python saves ~6 MB/frame of CPU memcpy
+- gst-launch CPU: **96% → 38.5%** (2.5× reduction)
+- python3 CPU: **60% → 57%** (modest reduction, bulk of work is frame I/O + ROS serialization)
+- ROS publish rate: stable 29-30 Hz
+
+**Trade-off Accepted:**
+- Hardware H264 encoder is now required — devices without NVENC (e.g. Orin Nano 4GB/8GB) will fail at startup
+- SW encoding pipelines are commented out in entrypoint.sh and can be restored if needed
+- ROS topic encoding changed from `rgb8` to `bgr8` — downstream nodes using cv_bridge handle both natively
 
 ### Known Constraints & Workarounds
 
 - **GStreamer + ROS2 in single process**: Not feasible due to event loop conflict (Phase 1 discovery)
 - **RTSP H.264 re-decode cost**: Eliminated via SHM branch (Phase 3 solution)
 - **CPU-bound JPEG decode**: Mitigated via hardware decoder + fallback (Phase 4 solution)
+- **CPU-bound color conversion**: Offloaded to GPU via nvvidconv BGRx output (Phase 5 solution)
+- **Software H264 encoding**: Disabled; nvv4l2h264enc (NVENC) required. Commented-out x264enc pipelines in entrypoint.sh can be restored for devices without NVENC.
 - **CycloneDDS multicast blocked**: Solved via unicast peer configuration (see Section 6)
 
 ### Deprecated Experimental Code
