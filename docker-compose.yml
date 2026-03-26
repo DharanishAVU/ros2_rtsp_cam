@@ -57,12 +57,14 @@ services:
       - ROS2_ENABLED=1
       
       # ROS2 DDS configuration
-      - ROS_DOMAIN_ID=0
+      - ROS_DOMAIN_ID=82
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       # Unicast peer discovery — avoids multicast which is blocked on most WiFi/LAN setups
       # MaxMessageSize/FragmentSize raised for 1920×1080 image transport (~6 MB/frame)
-      - CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces><MaxMessageSize>65500B</MaxMessageSize><FragmentSize>65000B</FragmentSize></General><Discovery><Peers><Peer address="192.168.1.52"/></Peers></Discovery></Domain></CycloneDDS>
-      
+      #use the below uri to test images on laptop
+      #- CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces><MaxMessageSize>65500B</MaxMessageSize><FragmentSize>65000B</FragmentSize></General><Discovery><Peers><Peer address="192.168.1.52"/></Peers></Discovery></Domain></CycloneDDS>
+      #use the below uri on jetson to publish images over ros2
+      - CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/></Interfaces><MaxMessageSize>65500B</MaxMessageSize><FragmentSize>65000B</FragmentSize></General></Domain></CycloneDDS>
       # Python error handling for better diagnostics
       - PYTHONFAULTHANDLER=1
     

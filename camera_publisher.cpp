@@ -21,7 +21,7 @@ public:
     declare_parameter<std::string>("shm_socket", "/tmp/ros_frames");
     declare_parameter<std::string>("rtsp_url", "rtsp://127.0.0.1:8554/camera");
     declare_parameter<std::string>("camera_info_file", "/etc/camera_info.yaml");
-    declare_parameter<std::string>("frame_id", "camera_optical_frame");
+    declare_parameter<std::string>("frame_id", "camera_link_optical");
     declare_parameter<double>("publish_rate", 30.0);
     declare_parameter<int>("width", 1920);
     declare_parameter<int>("height", 1080);
@@ -39,8 +39,8 @@ public:
     frame_size_ = width_ * height_ * 3;  // RGB, 3 bytes per pixel
 
     // Create publishers
-    image_pub_ = create_publisher<sensor_msgs::msg::Image>("/camera/image_raw", 1);
-    camera_info_pub_ = create_publisher<sensor_msgs::msg::CameraInfo>("/camera/camera_info", 1);
+    image_pub_ = create_publisher<sensor_msgs::msg::Image>("/camera/image_raw", rclcpp::SensorDataQoS());
+    camera_info_pub_ = create_publisher<sensor_msgs::msg::CameraInfo>("/camera/camera_info", rclcpp::SensorDataQoS());
 
     // Initialize GStreamer
     gst_init(nullptr, nullptr);
