@@ -169,7 +169,7 @@ echo "Mode: RTSP + ROS2 image publishing"
 echo "Starting ROS2 image publisher..."
 # Ensure CAMERA_INFO_FILE exists inside container; copy packaged file if missing
 if [ ! -f "$CAMERA_INFO_FILE" ]; then
-    PUBLISHER_PATH="/usr/local/bin/camera_publisher.py"
+    PUBLISHER_PATH="/usr/local/bin/camera_publisher"
     PUBLISHER_DIR="$(dirname "$(readlink -f "$PUBLISHER_PATH" 2>/dev/null || echo $PUBLISHER_PATH)")"
     CANDIDATES=("$PUBLISHER_DIR/camera_info.yaml" "/usr/local/share/ros2_rtsp_cam/camera_info.yaml" "/app/camera_info.yaml")
     for c in "${CANDIDATES[@]}"; do
@@ -182,7 +182,7 @@ if [ ! -f "$CAMERA_INFO_FILE" ]; then
     done
 fi
 # Reads from SHM tee branch (or RTSP fallback), publishes /camera/image_raw and /camera/camera_info
-/usr/local/bin/camera_publisher.py --ros-args \
+/usr/local/bin/camera_publisher --ros-args \
     -p shm_socket:="$ROS_SHM_SOCKET" \
     -p width:="$ROS_WIDTH" \
     -p height:="$ROS_HEIGHT" \

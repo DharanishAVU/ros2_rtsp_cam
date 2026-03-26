@@ -90,7 +90,7 @@ class RTSPCameraPublisher(Node):
             raise RuntimeError("Camera stream connection failed")
         
         self.bridge = CvBridge()
-        
+
         # Load camera calibration
         self.get_logger().info(f"Using camera_info_file: {self.camera_info_file}")
         self.camera_info = self.load_camera_info()

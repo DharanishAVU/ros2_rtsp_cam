@@ -3,7 +3,7 @@
 Streams a USB camera as RTSP and publishes ROS2 image topics simultaneously using hardware-accelerated MJPEG decode on Jetson.
 
 - **RTSP**: `rtsp://localhost:8554/camera` (H.264, downscaled to 1280×720 @ 30fps)
-- **ROS2**: `/camera/image_raw` + `/camera/camera_info` (1920×1080 @ 30fps, BGR8, `sensor_msgs/Image`)
+- **ROS2**: `/camera/image_raw` + `/camera/camera_info` (1920×1080 @ 30fps, RGB8, `sensor_msgs/Image`)
 - **Camera**: 1920×1080 @ 30fps MJPEG source (hardware-decoded on GPU)
 - **Pipeline**: GStreamer tee branching (RTSP + SHM paths), shared-memory frame delivery to ROS2
 
@@ -20,9 +20,9 @@ tee branch
   ├─ RTSP path: nvvidconv → nvv4l2h264enc (HW) → rtspclientsink (1280×720 @ 30fps)
   └─ ROS path:  nvvidconv (BGRx, GPU) → videoconvert (RGB) → shmsink (1920×1080 @ 30fps)
    ↓
-camera_publisher.py (SHM-first, RTSP fallback)
+camera_publisher (C++, GStreamer appsink — no videoconvert, no OpenCV)
    ↓
-/camera/image_raw (bgr8) @ 29-30 Hz
+/camera/image_raw (rgb8) @ 29-30 Hz
 ```
 
 ## Quick Start
@@ -103,10 +103,10 @@ environment:
 
 Default configuration uses **hardware MJPEG decode (nvv4l2decoder)** and **hardware H264 encode (nvv4l2h264enc)** on Jetson, with GPU-accelerated color conversion (nvvidconv BGRx) on the ROS SHM branch:
 
-- **gst-launch CPU**: ~38% (down from ~96% with CPU color conversion)
-- **python3 CPU**: ~57% (eliminates BGR↔RGB conversion)
+- **gst-launch CPU**: ~46% (hardware decode + encode + GPU color conversion)
+- **camera_publisher CPU**: ~44% (C++ node, GStreamer direct appsink, no videoconvert)
 - **ROS fps**: stable 29-30 Hz
-- **Latency**: minimal (SHM direct frame delivery)
+- **Latency**: minimal (SHM direct frame delivery, zero color conversion in publisher)
 
 Hardware H264 encoder (nvv4l2h264enc / NVENC) is **required**. If unavailable (e.g. Orin Nano), the container will exit with an error.
 If hardware MJPEG decoder is unavailable, automatic fallback to software jpegdec (CPU-bound, higher load).

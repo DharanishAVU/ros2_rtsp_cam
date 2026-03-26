@@ -28,10 +28,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-ros-base \
     ros-humble-image-transport \
     ros-humble-camera-info-manager \
-    ros-humble-cv-bridge \
     ros-humble-rmw-cyclonedds-cpp \
-    python3-pip \
-    libopencv-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install open-source GStreamer community plugins, RTSP tools, and kmod.
@@ -46,9 +43,8 @@ RUN apt-get update && apt-get install -y \
     gstreamer1.0-plugins-ugly \
     gstreamer1.0-libav \
     gstreamer1.0-rtsp \
-    python3-gst-1.0 \
-    gir1.2-gst-plugins-base-1.0 \
-    gir1.2-gstreamer-1.0 \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
     netcat-openbsd \
     wget \
     v4l-utils \
@@ -61,23 +57,21 @@ RUN wget -q https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/medi
     && mv mediamtx /usr/local/bin/ \
     && rm mediamtx_v1.9.0_linux_arm64v8.tar.gz
 
-# Install Python dependencies for ROS2 camera publisher
-# Use apt OpenCV so Python bindings include GStreamer backend support.
-# Pin numpy<2 for cv_bridge compatibility.
-RUN apt-get update && apt-get install -y \
-    python3-opencv \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir \
-    "numpy<2" \
-    pyyaml
-
 # Setup ROS2 environment
 RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 
+# Build C++ camera publisher
+COPY camera_publisher.cpp CMakeLists.txt /tmp/build/
+RUN bash -c "source /opt/ros/humble/setup.bash && \
+    cd /tmp/build && mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    make -j\$(nproc) && \
+    cp camera_publisher /usr/local/bin/" && \
+    rm -rf /tmp/build
+
 COPY mediamtx.yml /etc/mediamtx/mediamtx.yml
 COPY camera_info.yaml /etc/camera_info.yaml
-COPY camera_publisher.py /usr/local/bin/camera_publisher.py
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh /usr/local/bin/camera_publisher.py
+RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

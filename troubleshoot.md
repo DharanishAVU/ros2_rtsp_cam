@@ -393,22 +393,23 @@ tee (zero-copy branching)
   └─ ROS SHM Branch
       ├─ nvvidconv (NV12 → BGRx, GPU-accelerated color conversion + scale)
       ├─ videoconvert (BGRx → RGB, cheap alpha strip)
-      └─ shmsink (/tmp/ros_frames) → camera_publisher.py
+      └─ shmsink (/tmp/ros_frames) → camera_publisher (C++)
 ```
 
-**ROS2 Publisher Path:**
+**ROS2 Publisher Path (C++ node, Phase 6):**
 
 ```
-camera_publisher.py (separate process)
+camera_publisher (C++ binary, GStreamer C API)
   ├─ SHM Primary Path (active)
   │   ├─ shmsrc /tmp/ros_frames
-  │   ├─ videoconvert RGB → BGR (for OpenCV appsink compatibility)
-  │   └─ appsink (low-latency, drop late frames)
-  │       └─ publish /camera/image_raw (bgr8) @ 30 Hz
+  │   ├─ video/x-raw,format=RGB (direct passthrough, NO videoconvert)
+  │   └─ appsink → gst_app_sink_try_pull_sample()
+  │       └─ memcpy into pre-allocated Image msg
+  │       └─ publish /camera/image_raw (rgb8) @ 30 Hz
   │
   └─ RTSP Fallback Path (if SHM unavailable)
-      ├─ cv2.VideoCapture("rtsp://localhost:8554/camera")
-      └─ publish /camera/image_raw (bgr8) @ 30 Hz
+      ├─ rtspsrc → rtph264depay → avdec_h264 → videoconvert → RGB
+      └─ publish /camera/image_raw (rgb8) @ 30 Hz
 ```
 
 ### Configuration Knobs (Environment Variables)
@@ -432,8 +433,9 @@ Each phase locked in a constraint or revealed a limitation:
 2. **Phase 2 → 3**: SHM branching unlocks low-latency ROS without sacrificing RTSP (added zero-copy path)
 3. **Phase 3 → 4**: Hardware decode reduces CPU further without architectural changes (orthogonal optimization)
 4. **Phase 4 → 5**: GPU color conversion + eliminating redundant conversions cuts gst-launch CPU from ~96% to ~38%
+5. **Phase 5 → 6**: C++ port with GStreamer direct API eliminates videoconvert from publisher, cuts publisher CPU from ~78% to ~44%
 
-Result: Final system is **stable**, **performant**, **fault-tolerant** (SHM + RTSP fallback), and **tunable** (per-branch parameters). Combined CPU usage reduced from ~156% (Phase 4) to ~95% (Phase 5).
+Result: Final system is **stable**, **performant**, **fault-tolerant** (SHM + RTSP fallback), and **tunable** (per-branch parameters). Combined CPU usage reduced from ~156% (Phase 4) to ~90% (Phase 6).
 
 ### Phase 5: HW-Only H264 Encoding + GPU Color Conversion (CPU Optimization)
 **What We Observed:**
@@ -464,6 +466,37 @@ Result: Final system is **stable**, **performant**, **fault-tolerant** (SHM + RT
 - Hardware H264 encoder is now required — devices without NVENC (e.g. Orin Nano 4GB/8GB) will fail at startup
 - SW encoding pipelines are commented out in entrypoint.sh and can be restored if needed
 - ROS topic encoding changed from `rgb8` to `bgr8` — downstream nodes using cv_bridge handle both natively
+
+### Phase 6: C++ Port with GStreamer Direct API (Eliminate videoconvert)
+**What We Observed:**
+- After Phase 5, python3 still consumed ~78% CPU despite C++ cv_bridge being efficient
+- Root cause: `videoconvert` RGB→BGR running inside the publisher process (same C code whether Python or C++)
+- cv::VideoCapture (OpenCV) required `videoconvert` for caps negotiation with appsink
+- Initial C++ port using OpenCV showed identical CPU (~78%) — confirmed Python was not the bottleneck
+
+**What We Implemented:**
+- **camera_publisher.cpp:** Rewrote using GStreamer C API directly (no OpenCV, no cv_bridge)
+  - `gst_app_sink_try_pull_sample()` reads RGB frames from shmsrc with zero color conversion
+  - Pre-allocated `sensor_msgs::msg::Image` with single `memcpy` from GStreamer buffer
+  - RTSP fallback via GStreamer `rtspsrc` pipeline (replaces OpenCV FFMPEG backend)
+- **CMakeLists.txt:** Standalone cmake build, links GStreamer + ROS2 (no colcon workspace)
+- **Dockerfile:** Removed Python deps (python3-opencv, numpy, pyyaml), added GStreamer dev headers, C++ build step
+- **entrypoint.sh:** Launches C++ binary instead of Python script
+
+**Why It Helped:**
+- Eliminated `videoconvert` entirely from the publisher — reads RGB directly from shmsrc
+- No OpenCV overhead (VideoCapture, Mat allocation, format negotiation)
+- No cv_bridge overhead (toImageMsg copies)
+- Single memcpy from GStreamer buffer into pre-allocated ROS message
+- camera_publisher CPU: **78% → 44%** (1.8× reduction)
+- gst-launch CPU: ~46% (unchanged, expected)
+- ROS topic encoding: `rgb8` (matches shmsink output directly)
+- Combined CPU: ~90% (down from ~135% with Python publisher)
+
+**Trade-off Accepted:**
+- camera_publisher.py removed — C++ binary is less convenient to modify
+- Python fallback no longer available; requires Docker rebuild for changes
+- RTSP fallback uses GStreamer rtspsrc instead of OpenCV FFMPEG (different error behavior)
 
 ### Known Constraints & Workarounds
 
