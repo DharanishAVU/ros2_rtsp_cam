@@ -24,6 +24,7 @@ services:
     # Expose all /dev entries (cameras, GPU, etc.) into the container
     volumes:
       - /dev/:/dev/
+      - ./camera_info.yaml:/etc/camera_info.yaml:ro
       # JetPack 6: NVIDIA GStreamer plugins (nvv4l2decoder, nvvidconv, nvv4l2h264enc) are
       # baked into the l4t-jetpack base image — no host bind-mounts needed.
       # Container is self-contained and independent of host JetPack version.
@@ -35,37 +36,8 @@ services:
             - driver: nvidia
               count: all
               capabilities: [ gpu ]
-    
-    environment:
-      # GStreamer settings
-      - GST_DEBUG=2
-      
-      # Camera parameters (compatible with stream_simple.sh)
-      - DEVICE=/dev/video-side-front
-      - WIDTH=1920
-      - HEIGHT=1080
-      - FRAMERATE=30
-      - ROS_WIDTH=1920
-      - ROS_HEIGHT=1080
-      - ROS_FRAMERATE=30
-      - RTSP_WIDTH=1280
-      - RTSP_HEIGHT=720
-      - RTSP_FRAMERATE=30
-      - USE_HW_MJPEG_DECODER=1
-      
-      # ROS2 mode: set to 1 for combined RTSP+ROS2, 0 for RTSP-only
-      - ROS2_ENABLED=1
-      
-      # ROS2 DDS configuration
-      - ROS_DOMAIN_ID=82
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      # Unicast peer discovery — avoids multicast which is blocked on most WiFi/LAN setups
-      # MaxMessageSize/FragmentSize raised for 1920×1080 image transport (~6 MB/frame)
-      #use the below uri to test images on laptop
-      #- CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces><MaxMessageSize>65500B</MaxMessageSize><FragmentSize>65000B</FragmentSize></General><Discovery><Peers><Peer address="192.168.1.52"/></Peers></Discovery></Domain></CycloneDDS>
-      #use the below uri on jetson to publish images over ros2
-      - CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/></Interfaces><MaxMessageSize>65500B</MaxMessageSize><FragmentSize>65000B</FragmentSize></General></Domain></CycloneDDS>
-      # Python error handling for better diagnostics
-      - PYTHONFAULTHANDLER=1
-    
+
+    env_file:
+      - camera.env
+
     shm_size: "256mb"

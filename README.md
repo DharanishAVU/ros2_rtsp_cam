@@ -3,8 +3,8 @@
 Streams a USB camera as RTSP and publishes ROS2 image topics simultaneously using hardware-accelerated MJPEG decode on Jetson.
 
 - **RTSP**: `rtsp://localhost:8554/camera` (H.264, downscaled to 1280×720 @ 30fps)
-- **ROS2**: `/camera/image_raw` + `/camera/camera_info` (1920×1080 @ 30fps, RGB8, `sensor_msgs/Image`)
-- **Camera**: 1920×1080 @ 30fps MJPEG source (hardware-decoded on GPU)
+- **ROS2**: `/camera/image_raw` + `/camera/camera_info` (1920×1080 @ 60fps, RGB8, `sensor_msgs/Image`)
+- **Camera**: 1920×1080 @ 60fps MJPEG source (hardware-decoded on GPU)
 - **Pipeline**: GStreamer tee branching (RTSP + SHM paths), shared-memory frame delivery to ROS2
 
 ## Architecture
@@ -18,11 +18,11 @@ nvvidconv (normalize caps)
    ↓
 tee branch
   ├─ RTSP path: nvvidconv → nvv4l2h264enc (HW) → rtspclientsink (1280×720 @ 30fps)
-  └─ ROS path:  nvvidconv (BGRx, GPU) → videoconvert (RGB) → shmsink (1920×1080 @ 30fps)
+  └─ ROS path:  nvvidconv (BGRx, GPU) → videoconvert (RGB) → shmsink (1920×1080 @ 60fps)
    ↓
 camera_publisher (C++, GStreamer appsink — no videoconvert, no OpenCV)
    ↓
-/camera/image_raw (rgb8) @ 29-30 Hz
+/camera/image_raw (rgb8) @ 60 Hz
 ```
 
 ## Quick Start
@@ -59,42 +59,42 @@ ffplay rtsp://localhost:8554/camera
 
 ## Configuration
 
-All parameters are set in `docker-compose.yml` under `environment`. Key options:
+All parameters are set in `camera.env` — the single source of truth for runtime settings.
+Edit this file and run `docker compose up -d` to apply changes (no rebuild needed).
 
 ### Camera & Decode
 
-```yaml
-environment:
-  - DEVICE=/dev/video-side-front     # camera device path
-  - WIDTH=1920                        # source capture width
-  - HEIGHT=1080                       # source capture height
-  - FRAMERATE=30                      # source capture rate (Hz)
-  - USE_HW_MJPEG_DECODER=1            # 1=GPU decode (default), 0=CPU decode (jpegdec fallback)
+```bash
+DEVICE=/dev/video-front          # camera device path
+WIDTH=1920                        # source capture width
+HEIGHT=1080                       # source capture height
+FRAMERATE=60                      # source capture rate (Hz)
+USE_HW_MJPEG_DECODER=1            # 1=GPU decode (default), 0=CPU decode (jpegdec fallback)
 ```
 
 ### ROS2 Branch
 
-```yaml
-  - ROS_WIDTH=1920                    # ROS image width (full detail for ArUco)
-  - ROS_HEIGHT=1080                   # ROS image height
-  - ROS_FRAMERATE=30                  # ROS publish rate (Hz)
-  - ROS2_ENABLED=1                    # 1=RTSP+ROS2, 0=RTSP only
+```bash
+ROS_WIDTH=1920                    # ROS image width (full detail for ArUco)
+ROS_HEIGHT=1080                   # ROS image height
+ROS_FRAMERATE=60                  # ROS publish rate (Hz)
+ROS2_ENABLED=1                    # 1=RTSP+ROS2, 0=RTSP only
 ```
 
 ### RTSP Branch
 
-```yaml
-  - RTSP_WIDTH=1280                   # RTSP stream width (downscaled, reduced bandwidth)
-  - RTSP_HEIGHT=720                   # RTSP stream height
-  - RTSP_FRAMERATE=30                 # RTSP stream rate (Hz)
+```bash
+RTSP_WIDTH=1280                   # RTSP stream width (downscaled, reduced bandwidth)
+RTSP_HEIGHT=720                   # RTSP stream height
+RTSP_FRAMERATE=30                 # RTSP stream rate (Hz)
 ```
 
 ### ROS2 Network
 
-```yaml
-  - ROS_DOMAIN_ID=0                   # match your ROS2 domain
-  - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp  # CycloneDDS (unicast, no multicast required)
-  - CYCLONEDDS_URI=...                # unicast peer discovery (see troubleshoot.md Section 6)
+```bash
+ROS_DOMAIN_ID=82                  # match your ROS2 domain
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp  # CycloneDDS (unicast, no multicast required)
+CYCLONEDDS_URI=...                # unicast peer discovery (see troubleshoot.md Section 6)
 ```
 
 ## Performance Tuning
@@ -105,7 +105,8 @@ Default configuration uses **hardware MJPEG decode (nvv4l2decoder)** and **hardw
 
 - **gst-launch CPU**: ~46% (hardware decode + encode + GPU color conversion)
 - **camera_publisher CPU**: ~44% (C++ node, GStreamer direct appsink, no videoconvert)
-- **ROS fps**: stable 29-30 Hz
+- **ROS fps**: stable 60 Hz (`/camera/image_raw`)
+- **RTSP fps**: 30 Hz (independently rate-limited at encode step)
 - **Latency**: minimal (SHM direct frame delivery, zero color conversion in publisher)
 
 Hardware H264 encoder (nvv4l2h264enc / NVENC) is **required**. If unavailable (e.g. Orin Nano), the container will exit with an error.
@@ -122,25 +123,29 @@ To force software MJPEG decode:
 ### Resolution & Framerate Tuning
 
 Decouple ROS and RTSP targets via tee branching:
-- **ROS**: Keep at 1920×1080 @ 30Hz for maximum ArUco detail and stability.
-- **RTSP**: Downscale to 1280×720 independently to reduce bandwidth/storage (example above).
+- **ROS**: Keep at 1920×1080 @ 60Hz — required for ArUco detection on a 30cm marker from 15m (≈24px marker width at 90° HFoV).
+- **RTSP**: Downscale to 1280×720 @ 30Hz independently to reduce network bandwidth/storage.
+
+> **Note on ArUco detection rate**: `/camera/image_raw` publishes at 60 Hz but downstream
+> ArUco detection (CPU, OpenCV) typically outputs at 2–3 Hz on 1920×1080 frames (~400ms/frame on ARM).
+> The camera pipeline is not the bottleneck — see [`troubleshoot.md` Section 13](troubleshoot.md#13-aruco-detection-rate-bottleneck) for analysis and fixes.
 
 ### Low-Latency Profile
 
 For drone live-view with minimal jitter:
-```yaml
-  - ROS_FRAMERATE=30                  # keep 30 Hz stable base
-  - RTSP_FRAMERATE=30                 # match ROS rate to avoid async skew
+```bash
+ROS_FRAMERATE=60                  # full 60 Hz for ArUco/control
+RTSP_FRAMERATE=30                 # reduced rate for monitoring stream
 ```
 
 ### High-Bandwidth Profile
 
-For higher fps if hardware allows:
-```yaml
-  - FRAMERATE=60                       # capture at 60 fps
-  - ROS_FRAMERATE=30                  # downsample ROS to 30 Hz (ArUco-safe)
-  - RTSP_FRAMERATE=60                 # RTSP stream all 60 fps for monitoring
-  - USE_HW_MJPEG_DECODER=1            # hardware decode scales better at 60 fps
+Default configuration already captures and publishes at 60fps end-to-end:
+```bash
+FRAMERATE=60                      # capture at 60 fps
+ROS_FRAMERATE=60                  # publish full 60 Hz to ROS2
+RTSP_FRAMERATE=30                 # RTSP at 30 Hz (bandwidth-limited)
+USE_HW_MJPEG_DECODER=1            # hardware decode required at 60 fps
 ```
 
 ## Troubleshooting
@@ -155,7 +160,7 @@ See [`troubleshoot.md`](troubleshoot.md) for detailed guides:
 **ROS topic not visible on laptop?**
 - Check [`troubleshoot.md` Section 6](troubleshoot.md#6-ros2-dds-topic-discovery-failing-from-laptop) for CycloneDDS unicast peer setup.
 
-**Camera image low fps (~2 Hz instead of 30 Hz)?**
+**Camera image low fps (~2 Hz instead of 60 Hz)?**
 - Ensure hardware decode is active: check logs for "Using decoder: nvv4l2decoder mjpeg=1".
 - If jpegdec is active on CPU, consider upgrading to Jetson Xavier/Orin for hardware NVDEC support.
 
@@ -167,7 +172,7 @@ See [`troubleshoot.md`](troubleshoot.md) for detailed guides:
 
 ### Camera calibration
 
-Edit `camera_info.yaml` — loaded at startup from `/etc/camera_info.yaml` inside the container.
+Edit `camera_info.yaml` in the repo root — it is volume-mounted into the container at `/etc/camera_info.yaml` via `docker-compose.yml`. Changes take effect on `docker compose up -d` with no rebuild needed.
 
 ### Additional Common Issues
 

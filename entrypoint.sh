@@ -4,20 +4,20 @@ set -e
 # Source ROS2
 source /opt/ros/humble/setup.bash
 
-DEVICE="${DEVICE:-/dev/video-side-front}"
+DEVICE="${DEVICE:-/dev/video-front}"
 FRAME_ID="${FRAME_ID:-camera_optical_frame}"
 CAMERA_NAME="${CAMERA_NAME:-camera}"
 CAMERA_INFO_FILE="${CAMERA_INFO_FILE:-/etc/camera_info.yaml}"
 WIDTH="${WIDTH:-1920}"
 HEIGHT="${HEIGHT:-1080}"
-FRAMERATE="${FRAMERATE:-30}"
+FRAMERATE="${FRAMERATE:-60}"
 ROS_WIDTH="${ROS_WIDTH:-1920}"
 ROS_HEIGHT="${ROS_HEIGHT:-1080}"
-ROS_FRAMERATE="${ROS_FRAMERATE:-30}"
+ROS_FRAMERATE="${ROS_FRAMERATE:-60}"
 RTSP_WIDTH="${RTSP_WIDTH:-1280}"
 RTSP_HEIGHT="${RTSP_HEIGHT:-720}"
 RTSP_FRAMERATE="${RTSP_FRAMERATE:-30}"
-USE_HW_MJPEG_DECODER="${USE_HW_MJPEG_DECODER:-0}"
+USE_HW_MJPEG_DECODER="${USE_HW_MJPEG_DECODER:-1}"
 ROS2_ENABLED="${ROS2_ENABLED:-1}"
 ROS_SHM_SOCKET="${ROS_SHM_SOCKET:-/tmp/ros_frames}"
 
@@ -73,15 +73,15 @@ if [ "$USE_HW_MJPEG_DECODER" = "1" ] && command -v gst-inspect-1.0 >/dev/null 2>
             tee name=t \
                 t. ! queue leaky=downstream max-size-buffers=2 ! \
                     nvvidconv ! \
-                    "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$RTSP_WIDTH,height=(int)$RTSP_HEIGHT,framerate=(fraction)$RTSP_FRAMERATE/1" ! \
+                    "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$RTSP_WIDTH,height=(int)$RTSP_HEIGHT" ! \
                     nvv4l2h264enc preset-level=1 control-rate=1 bitrate=2000000 ! \
                     h264parse ! \
                     rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp \
                 t. ! queue leaky=downstream max-size-buffers=1 ! \
                     nvvidconv ! \
-                    "video/x-raw,format=(string)BGRx,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
+                    "video/x-raw,format=(string)BGRx,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT" ! \
                     videoconvert ! \
-                    "video/x-raw,format=(string)RGB,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
+                    "video/x-raw,format=(string)RGB,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT" ! \
                     shmsink socket-path="$ROS_SHM_SOCKET" \
                         shm-size=67108864 wait-for-connection=false sync=false async=false &
 
@@ -121,15 +121,15 @@ else
             tee name=t \
                 t. ! queue leaky=downstream max-size-buffers=2 ! \
                     nvvidconv ! \
-                    "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$RTSP_WIDTH,height=(int)$RTSP_HEIGHT,framerate=(fraction)$RTSP_FRAMERATE/1" ! \
+                    "video/x-raw(memory:NVMM),format=(string)NV12,width=(int)$RTSP_WIDTH,height=(int)$RTSP_HEIGHT" ! \
                     nvv4l2h264enc preset-level=1 control-rate=1 bitrate=2000000 ! \
                     h264parse ! \
                     rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp \
                 t. ! queue leaky=downstream max-size-buffers=1 ! \
                     nvvidconv ! \
-                    "video/x-raw,format=(string)BGRx,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
+                    "video/x-raw,format=(string)BGRx,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT" ! \
                     videoconvert ! \
-                    "video/x-raw,format=(string)RGB,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT,framerate=(fraction)$ROS_FRAMERATE/1" ! \
+                    "video/x-raw,format=(string)RGB,width=(int)$ROS_WIDTH,height=(int)$ROS_HEIGHT" ! \
                     shmsink socket-path="$ROS_SHM_SOCKET" \
                         shm-size=67108864 wait-for-connection=false sync=false async=false &
 

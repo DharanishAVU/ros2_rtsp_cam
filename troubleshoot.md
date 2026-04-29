@@ -125,10 +125,10 @@ Also, `rmw_cyclonedds_cpp` was not installed in the laptop Docker image.
 Use CycloneDDS with explicit unicast peer pointing to Jetson IP on both sides.
 
 ### Implementation
-Updated docker-compose.yml on Jetson:
-```yaml
-- RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-- CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces></General><Discovery><Peers><Peer address="10.10.111.6"/></Peers></Discovery></Domain></CycloneDDS>
+Updated `camera.env` on Jetson (environment variables moved out of docker-compose.yml):
+```bash
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces><MaxMessageSize>65500B</MaxMessageSize><FragmentSize>65000B</FragmentSize></General><Discovery><Peers><Peer address="10.10.111.6"/></Peers></Discovery></Domain></CycloneDDS>
 ```
 
 Working one-liner to view ROS2 image stream from laptop (installs cyclonedds + rqt):
@@ -252,6 +252,49 @@ Updated docker-compose.yml:
 - `ROS_FRAMERATE=30`: Adjust ROS publish rate (default 30 Hz stable for ArUco at 1080p).
 - `RTSP_FRAMERATE=30`: Adjust RTSP stream rate independently (decoupled from ROS via tee).
 - `ROS_WIDTH=1920, ROS_HEIGHT=1080`: Full-res ROS for ArUco detail; RTSP can downscale separately.
+
+---
+
+## 10) Configuration refactored to camera.env; framerate bumped to 60fps
+
+### Problem
+Runtime environment variables were inline in `docker-compose.yml`, making it easy to accidentally
+trigger a rebuild by editing them and requiring familiarity with Docker Compose YAML structure.
+Additionally, default framerate was 30fps while the camera hardware supports 60fps.
+
+### Solution
+Extract all runtime parameters into a dedicated `camera.env` file (single source of truth).
+`docker-compose.yml` references it via `env_file: - camera.env`.
+Editing `camera.env` + running `docker compose up -d` applies changes with no rebuild.
+
+Camera calibration (`camera_info.yaml`) is now also volume-mounted from the repo root,
+so calibration updates apply on `docker compose up -d` without rebuilding.
+
+### Implementation
+Updated `docker-compose.yml`:
+- Replaced `environment:` block with `env_file: - camera.env`
+- Added `./camera_info.yaml:/etc/camera_info.yaml:ro` volume mount
+
+Updated `camera.env`:
+- `FRAMERATE=60` — capture and ROS branch both at 60fps (camera hardware supports it)
+- `ROS_FRAMERATE=60` — publisher defaults raised to match
+- `USE_HW_MJPEG_DECODER=1` — hardware decode on by default
+- `RTSP_FRAMERATE=30` — RTSP stream kept at 30fps (bandwidth reduction)
+- `DEVICE=/dev/video-front` — updated to match current symlink
+
+Updated `entrypoint.sh`:
+- Default values updated to match `camera.env` (60fps, hardware decode on)
+- Removed explicit `framerate=` caps from `nvvidconv` pipeline strings — framerate is now
+  governed by `v4l2src` at source; removing it from mid-pipeline caps avoids negotiation mismatches
+
+Updated `camera_publisher.cpp`:
+- Default `publish_rate` raised to 60.0 Hz
+- Default `framerate` raised to 60 (used in SHM pipeline caps negotiation)
+
+### Outcome
+- `/camera/image_raw` publishes at 60 Hz
+- `camera_info.yaml` editable without rebuild
+- All runtime tuning in one place (`camera.env`)
 
 ---
 
@@ -497,6 +540,52 @@ Result: Final system is **stable**, **performant**, **fault-tolerant** (SHM + RT
 - camera_publisher.py removed — C++ binary is less convenient to modify
 - Python fallback no longer available; requires Docker rebuild for changes
 - RTSP fallback uses GStreamer rtspsrc instead of OpenCV FFMPEG (different error behavior)
+
+---
+
+## 13) ArUco Detection Rate Bottleneck (2.5 Hz output vs 60 Hz camera input)
+
+### Problem
+ArUco detection node outputs `/aruco_pose` at ~2.5 Hz average despite `/camera/image_raw` publishing at 60 Hz.
+
+Measured topic rates on Jetson:
+```
+/camera/image_raw   →  30.0 Hz   (camera pipeline, healthy)
+/aruco_pose         →   2.5 Hz   (ArUco detection output)
+/dock_goal_pose     →   3.3 Hz   (goal pose selector output)
+landing controller  →  50.0 Hz   (control loop spin rate)
+```
+
+### Root Cause
+CPU-bound ArUco detection at 1920×1080 takes ~400ms per frame on ARM (Jetson).
+At 2.5 Hz, the detector processes only 1 in ~12 frames it receives and drops the rest via queue backpressure.
+
+This is **not** a camera pipeline or transport bandwidth issue — `/camera/image_raw` publishes correctly and
+CycloneDDS loopback transport is not the bottleneck (both publisher and subscriber are on the same Jetson host).
+
+### Impact on Precision Landing
+The landing controller spins at 50 Hz (20ms cycle), but receives a fresh ArUco pose only every ~400ms.
+For a 30cm marker at 15m detection range:
+- Marker footprint: ~24px wide at 1920×1080 with 90° HFoV — at the detection margin
+- During descent at 0.5 m/s, 400ms blind windows = ~20cm of unguided flight per detection cycle
+- This is the primary obstacle to stable precision landing below ~5m altitude
+
+### Solution
+Two complementary fixes are required, both outside the camera pipeline:
+
+1. **GPU-accelerated ArUco detection** (primary fix) — use CUDA OpenCV (`cv::cuda`) on Jetson; the GPU
+   is largely idle during detection and can sustain 30+ Hz at 1080p.
+
+2. **Downscaled image topic** (optional) — add a third GStreamer tee branch in `entrypoint.sh` publishing
+   a second topic at e.g. 960×540 for closer-range fast detection. At 15m the marker would be ~12px wide
+   (borderline), but below 8m it is well above the detection threshold and the smaller image cuts
+   CPU detection time by ~4×.
+
+### Status
+Camera pipeline confirmed healthy. Detection-rate optimization requires changes in the ArUco detection node.
+See `troubleshoot.md` Section 12 (Architecture Rationale) for the full pipeline context.
+
+---
 
 ### Known Constraints & Workarounds
 

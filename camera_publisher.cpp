@@ -22,10 +22,10 @@ public:
     declare_parameter<std::string>("rtsp_url", "rtsp://127.0.0.1:8554/camera");
     declare_parameter<std::string>("camera_info_file", "/etc/camera_info.yaml");
     declare_parameter<std::string>("frame_id", "camera_link_optical");
-    declare_parameter<double>("publish_rate", 30.0);
+    declare_parameter<double>("publish_rate", 60.0);
     declare_parameter<int>("width", 1920);
     declare_parameter<int>("height", 1080);
-    declare_parameter<int>("framerate", 30);
+    declare_parameter<int>("framerate", 60);
 
     auto shm_socket = get_parameter("shm_socket").as_string();
     rtsp_url_ = get_parameter("rtsp_url").as_string();
