@@ -3,8 +3,8 @@
 Streams a USB camera as RTSP and publishes ROS2 image topics simultaneously using hardware-accelerated MJPEG decode on Jetson.
 
 - **RTSP**: `rtsp://localhost:8554/camera` (H.264, downscaled to 1280×720 @ 30fps)
-- **ROS2**: `/camera/image_raw` + `/camera/camera_info` (1920×1080 @ 60fps, RGB8, `sensor_msgs/Image`)
-- **Camera**: 1920×1080 @ 60fps MJPEG source (hardware-decoded on GPU)
+- **ROS2**: `/camera/image_raw` + `/camera/camera_info` (1920×1080 @ 30fps default, RGB8, `sensor_msgs/Image`)
+- **Camera**: 1920×1080 @ 30fps default MJPEG source (hardware-decoded on GPU)
 - **Pipeline**: GStreamer tee branching (RTSP + SHM paths), shared-memory frame delivery to ROS2
 
 ## Architecture
@@ -18,11 +18,11 @@ nvvidconv (normalize caps)
    ↓
 tee branch
   ├─ RTSP path: nvvidconv → nvv4l2h264enc (HW) → rtspclientsink (1280×720 @ 30fps)
-  └─ ROS path:  nvvidconv (BGRx, GPU) → videoconvert (RGB) → shmsink (1920×1080 @ 60fps)
+   └─ ROS path:  nvvidconv (BGRx, GPU) → videoconvert (RGB) → shmsink (1920×1080 @ configurable rate)
    ↓
 camera_publisher (C++, GStreamer appsink — no videoconvert, no OpenCV)
    ↓
-/camera/image_raw (rgb8) @ 60 Hz
+/camera/image_raw (rgb8) @ configurable rate (30 Hz default)
 ```
 
 ## Quick Start
@@ -62,13 +62,22 @@ ffplay rtsp://localhost:8554/camera
 All parameters are set in `camera.env` — the single source of truth for runtime settings.
 Edit this file and run `docker compose up -d` to apply changes (no rebuild needed).
 
+Calibration updates are read from `camera_info.yaml`, mounted into the container as `/etc/camera_info.yaml`.
+Updating `camera_info.yaml` and restarting/recreating the container is enough; no image rebuild is needed.
+
+### When restart is enough
+
+- **`docker restart rtsp-camera` is enough** for bind-mounted files such as `camera_info.yaml` and other runtime file edits.
+- **Use `docker compose up -d --force-recreate`** after changing `camera.env`, `docker-compose.yml`, or service-level env/volume settings.
+- **Use `docker compose up -d --build --force-recreate`** after changing `Dockerfile`, `entrypoint.sh`, `camera_publisher.cpp`, or other files copied into the image.
+
 ### Camera & Decode
 
 ```bash
 DEVICE=/dev/video-front          # camera device path
 WIDTH=1920                        # source capture width
 HEIGHT=1080                       # source capture height
-FRAMERATE=60                      # source capture rate (Hz)
+FRAMERATE=30                      # source capture rate (Hz, default)
 USE_HW_MJPEG_DECODER=1            # 1=GPU decode (default), 0=CPU decode (jpegdec fallback)
 ```
 
@@ -77,7 +86,7 @@ USE_HW_MJPEG_DECODER=1            # 1=GPU decode (default), 0=CPU decode (jpegde
 ```bash
 ROS_WIDTH=1920                    # ROS image width (full detail for ArUco)
 ROS_HEIGHT=1080                   # ROS image height
-ROS_FRAMERATE=60                  # ROS publish rate (Hz)
+ROS_FRAMERATE=30                  # ROS publish rate (Hz, default)
 ROS2_ENABLED=1                    # 1=RTSP+ROS2, 0=RTSP only
 ```
 
@@ -105,7 +114,7 @@ Default configuration uses **hardware MJPEG decode (nvv4l2decoder)** and **hardw
 
 - **gst-launch CPU**: ~46% (hardware decode + encode + GPU color conversion)
 - **camera_publisher CPU**: ~44% (C++ node, GStreamer direct appsink, no videoconvert)
-- **ROS fps**: stable 60 Hz (`/camera/image_raw`)
+- **ROS fps**: stable at configured rate (`/camera/image_raw`, 30 Hz default)
 - **RTSP fps**: 30 Hz (independently rate-limited at encode step)
 - **Latency**: minimal (SHM direct frame delivery, zero color conversion in publisher)
 
@@ -123,10 +132,10 @@ To force software MJPEG decode:
 ### Resolution & Framerate Tuning
 
 Decouple ROS and RTSP targets via tee branching:
-- **ROS**: Keep at 1920×1080 @ 60Hz — required for ArUco detection on a 30cm marker from 15m (≈24px marker width at 90° HFoV).
+- **ROS**: Keep at 1920×1080; run at 30Hz default and raise to 60Hz if your camera/compute budget supports it.
 - **RTSP**: Downscale to 1280×720 @ 30Hz independently to reduce network bandwidth/storage.
 
-> **Note on ArUco detection rate**: `/camera/image_raw` publishes at 60 Hz but downstream
+> **Note on ArUco detection rate**: `/camera/image_raw` can publish up to 60 Hz, but downstream
 > ArUco detection (CPU, OpenCV) typically outputs at 2–3 Hz on 1920×1080 frames (~400ms/frame on ARM).
 > The camera pipeline is not the bottleneck — see [`troubleshoot.md` Section 13](troubleshoot.md#13-aruco-detection-rate-bottleneck) for analysis and fixes.
 
@@ -140,7 +149,7 @@ RTSP_FRAMERATE=30                 # reduced rate for monitoring stream
 
 ### High-Bandwidth Profile
 
-Default configuration already captures and publishes at 60fps end-to-end:
+Use this profile when you need 60fps end-to-end and your hardware sustains it:
 ```bash
 FRAMERATE=60                      # capture at 60 fps
 ROS_FRAMERATE=60                  # publish full 60 Hz to ROS2
@@ -175,6 +184,28 @@ See [`troubleshoot.md`](troubleshoot.md) for detailed guides:
 Edit `camera_info.yaml` in the repo root — it is volume-mounted into the container at `/etc/camera_info.yaml` via `docker-compose.yml`. Changes take effect on `docker compose up -d` with no rebuild needed.
 
 ### Additional Common Issues
+
+**`/usr/local/bin/mediamtx: cannot execute binary file: Exec format error`**
+- Usually indicates a stale or wrong-architecture binary persisted in an older image/container.
+- Verify host + image architecture:
+```bash
+uname -m
+docker image inspect ros2_rtsp_cam-rtsp-server --format '{{.Architecture}} {{.Os}}'
+```
+- Verify installed MediaMTX binary type in the built image:
+```bash
+docker run --rm --entrypoint /bin/bash ros2_rtsp_cam-rtsp-server -lc 'file /usr/local/bin/mediamtx'
+```
+- Rebuild cleanly and recreate container:
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose up -d --force-recreate
+```
+- If the problem persists, inspect running container binary directly:
+```bash
+docker exec rtsp-camera file /usr/local/bin/mediamtx
+```
 
 **Device busy on startup** — another container is holding the camera:
 ```bash

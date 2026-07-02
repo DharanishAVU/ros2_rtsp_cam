@@ -596,6 +596,63 @@ See `troubleshoot.md` Section 12 (Architecture Rationale) for the full pipeline 
 - **Software H264 encoding**: Disabled; nvv4l2h264enc (NVENC) required. Commented-out x264enc pipelines in entrypoint.sh can be restored for devices without NVENC.
 - **CycloneDDS multicast blocked**: Solved via unicast peer configuration (see Section 6)
 
+---
+
+## 14) MediaMTX "Exec format error" at startup
+
+### Problem
+Container logs repeatedly show:
+```bash
+/entrypoint.sh: line 17: /usr/local/bin/mediamtx: cannot execute binary file: Exec format error
+```
+
+### Likely Root Cause
+Architecture mismatch between the running container and the installed MediaMTX binary, most often caused by stale image/container layers.
+
+Even if Dockerfile is correct now, an older locally cached image or container can still be used.
+
+### Quick Diagnosis
+Check host architecture:
+```bash
+uname -m
+```
+
+Check built image architecture:
+```bash
+docker image inspect ros2_rtsp_cam-rtsp-server --format '{{.Architecture}} {{.Os}}'
+```
+
+Check binary type inside image:
+```bash
+docker run --rm --entrypoint /bin/bash ros2_rtsp_cam-rtsp-server -lc 'file /usr/local/bin/mediamtx'
+```
+
+Check binary type in running container:
+```bash
+docker exec rtsp-camera file /usr/local/bin/mediamtx
+```
+
+For Jetson, all should report arm64/aarch64.
+
+### Recovery
+Perform a clean rebuild and container recreate:
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose up -d --force-recreate
+```
+
+If still failing, remove stale project images and rebuild again:
+```bash
+docker compose down --rmi local
+docker compose build --no-cache
+docker compose up -d --force-recreate
+```
+
+### Notes
+- `docker restart rtsp-camera` does not rebuild image layers, so it will not fix a wrong binary baked into the image.
+- `docker restart rtsp-camera` is still valid for runtime bind-mounted file changes (for example `camera_info.yaml`).
+
 ### Deprecated Experimental Code
 
 See `development.md` for earlier attempts in `final/` folder:

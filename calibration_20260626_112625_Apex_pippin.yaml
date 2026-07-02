@@ -1,0 +1,61 @@
+image_width: 1920
+image_height: 1080
+camera_name: camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1062.43559800538
+  - 0.0
+  - 936.9265123064602
+  - 0.0
+  - 1067.0502422658028
+  - 519.0971509333573
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data:
+  - -0.35511745527289285
+  - 0.16029802626313755
+  - 0.0009918511726756355
+  - -0.0005520068889092693
+  - -0.04019708896961678
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+projection_matrix:
+  rows: 3
+  cols: 4
+  data:
+  - 1062.43559800538
+  - 0.0
+  - 936.9265123064602
+  - 0.0
+  - 0.0
+  - 1067.0502422658028
+  - 519.0971509333573
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+reprojection_error: 0.6241386224012051
+calibration_date: '2026-06-26 11:26:25'
+num_images_used: 53
+pattern: charuco
+board_size: 8x5
+square_size: 0.0493
